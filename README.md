@@ -1,7 +1,6 @@
-# FastGithub
-github加速神器，解决github打不开、用户头像无法加载、releases无法上传下载、git-clone、git-pull、git-push失败等问题。
+# FastGithub-win
+FastGithub-win 是 GitHub 加速的工具，优化了原版网络。
 
-* 原仓库 https://github.com/dotnetcore/fastgithub 已经没有了，所以拿了最新版本改了自用。
 ## 致谢
 
 本项目基于 [creazyboyone/FastGithub](https://github.com/creazyboyone/FastGithub) 修改而来，
