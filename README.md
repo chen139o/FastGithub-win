@@ -40,8 +40,14 @@ FastGithub-win 是 GitHub 加速的工具，优化了原版网络。
 
 ### 4.1 git
 
-git操作提示`SSL certificate problem`</br>
-需要关闭git的证书验证：`git config --global http.sslverify false`
+程序启动时会自动为 git 配置 TLS 后端（Windows 上使用 `schannel`），让 git 通过系统证书存储信任本程序安装的自签 CA 证书，**因此不需要关闭证书校验**。
+
+如果仍然提示 `SSL certificate problem`，可以手动执行：
+
+    git config --global http.sslBackend schannel
+    git config --global http.sslverify true
+
+> 旧版本会执行 `git config --global http.sslverify false`。本版本已不再这样做，并会把之前遗留的 `false` 改回 `true`。
 
 ### 4.2 firefox
 

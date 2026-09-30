@@ -94,31 +94,52 @@ namespace FastGithub.HttpServer.Certs
                 this.logger.LogWarning($"请根据你的系统平台手动安装和信任CA证书{this.CaCerFilePath}");
             }
 
-            GitConfigSslverify(false);
+            this.ConfigGitTls();
         }
 
         /// <summary>
-        /// 设置ssl验证
+        /// 配置git的TLS行为，使git能够信任本程序安装的自签CA证书
         /// </summary>
-        /// <param name="value">是否验证</param>
-        /// <returns></returns>
-        public static bool GitConfigSslverify(bool value)
+        private void ConfigGitTls()
+        {
+            if (OperatingSystem.IsWindows() == true)
+            {
+                // Windows上让git改用系统证书存储(schannel)：
+                // 这样安装到系统根存储的CA会被git信任，无需关闭证书校验。
+                // 同时把旧版本遗留的 http.sslverify=false 改回 true。
+                this.SetGitConfig("http.sslBackend", "schannel");
+                this.SetGitConfig("http.sslverify", "true");
+            }
+            else
+            {
+                // 非Windows平台没有schannel，保持原有的关闭ssl验证行为
+                this.SetGitConfig("http.sslverify", "false");
+            }
+        }
+
+        /// <summary>
+        /// 执行git config --global
+        /// 等待进程退出，避免连续两条配置并发写入.gitconfig而丢失其中一条
+        /// </summary>
+        /// <param name="key"></param>
+        /// <param name="value"></param>
+        private void SetGitConfig(string key, string value)
         {
             try
             {
-                Process.Start(new ProcessStartInfo
+                using var process = Process.Start(new ProcessStartInfo
                 {
                     FileName = "git",
-                    Arguments = $"config --global http.sslverify {value.ToString().ToLower()}",
+                    Arguments = $"config --global {key} {value}",
                     UseShellExecute = true,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 });
-                return true;
+                process?.WaitForExit();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return false;
+                this.logger.LogWarning($"执行 git config --global {key} {value} 失败：{ex.Message}");
             }
         }
 
