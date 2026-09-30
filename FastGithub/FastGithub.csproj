@@ -31,9 +31,7 @@
 		<None Include="../README.md" Link="README.md" Condition="Exists('../README.md')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
-		<None Include="../README.html" Link="README.html" Condition="Exists('../README.html')">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</None>
+		<!-- README.html 不再随程序发布：内容与 README.md 重复，修改维护成本高 -->
 		<None Include="../LICENSE" Link="LICENSE" Condition="Exists('../LICENSE')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
