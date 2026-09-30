@@ -61,7 +61,7 @@ namespace FastGithub.DomainResolve
             }
             catch (Exception ex)
             {
-                this.logger.LogWarning($"{this.processName}启动失败：{ex.Message}");
+                this.logger.LogError(ex, $"{this.processName}启动失败，将只使用FallbackDns解析域名");
             }
         }
 
@@ -96,6 +96,10 @@ namespace FastGithub.DomainResolve
                 this.LocalEndPoint = localEndPoint;
                 this.process.EnableRaisingEvents = true;
                 this.process.Exited += (s, e) => this.LocalEndPoint = null;
+            }
+            else
+            {
+                this.logger.LogError($"{this.processName}进程未能启动，将只使用FallbackDns解析域名（以服务方式运行时需要管理员权限）");
             }
         }
 

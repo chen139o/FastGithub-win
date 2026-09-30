@@ -25,6 +25,12 @@ namespace FastGithub.Http
         private readonly TimeSpan connectTimeout = TimeSpan.FromSeconds(10d);
 
         /// <summary>
+        /// 连接阶段的兜底总时限
+        /// 单个ip的尝试有connectTimeout，但没有上限的逐个重试会让请求长时间挂起
+        /// </summary>
+        private readonly TimeSpan connectTimeoutTotal = TimeSpan.FromSeconds(30d);
+
+        /// <summary>
         /// HttpClientHandler
         /// </summary>
         /// <param name="domainConfig"></param>
@@ -93,29 +99,52 @@ namespace FastGithub.Http
         /// <returns></returns>
         private async ValueTask<Stream> ConnectCallback(SocketsHttpConnectionContext context, CancellationToken cancellationToken)
         {
-            var innerExceptions = new List<Exception>();
-            var ipEndPoints = this.GetIPEndPointsAsync(context.DnsEndPoint, cancellationToken);
+            // 所有候选ip共享一个总时限：
+            // 单个ip的尝试有connectTimeout，但候选ip的数量没有上限，
+            // 逐个串行重试会让请求卡住十几秒甚至更久
+            using var totalTokenSource = new CancellationTokenSource(this.connectTimeoutTotal);
+            using var totalLinkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, totalTokenSource.Token);
 
-            await foreach (var ipEndPoint in ipEndPoints)
+            var innerExceptions = new List<Exception>();
+            var ipEndPoints = this.GetIPEndPointsAsync(context.DnsEndPoint, totalLinkedSource.Token);
+            try
             {
-                try
+                await foreach (var ipEndPoint in ipEndPoints)
                 {
-                    using var timeoutTokenSource = new CancellationTokenSource(this.connectTimeout);
-                    using var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(timeoutTokenSource.Token, cancellationToken);
-                    return await this.ConnectAsync(context, ipEndPoint, linkedTokenSource.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    innerExceptions.Add(new HttpConnectTimeoutException(ipEndPoint.Address));
-                }
-                catch (Exception ex)
-                {
-                    innerExceptions.Add(ex);
+                    try
+                    {
+                        using var timeoutTokenSource = new CancellationTokenSource(this.connectTimeout);
+                        using var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(totalLinkedSource.Token, timeoutTokenSource.Token);
+                        var stream = await this.ConnectAsync(context, ipEndPoint, linkedTokenSource.Token);
+                        this.domainResolver.ReportConnectSucceeded(ipEndPoint);
+                        return stream;
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested == false)
+                    {
+                        innerExceptions.Add(new HttpConnectTimeoutException(ipEndPoint.Address));
+
+                        // 只有该ip自己的connectTimeout到期才降权；
+                        // 若是30秒总预算耗尽，这个ip可能只是排在后面没轮到，不应惩罚
+                        if (totalTokenSource.IsCancellationRequested == true)
+                        {
+                            break;
+                        }
+                        this.domainResolver.ReportConnectFailed(ipEndPoint);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        innerExceptions.Add(ex);
+                        this.domainResolver.ReportConnectFailed(ipEndPoint);
+                    }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested == false)
+            {
+                // 总时限已耗尽
+            }
 
-            throw new AggregateException("找不到任何可成功连接的IP", innerExceptions);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new AggregateException($"连接{context.DnsEndPoint.Host}失败：{this.connectTimeoutTotal.TotalSeconds:0}秒内没有找到可成功连接的IP", innerExceptions);
         }
 
         /// <summary>
@@ -128,7 +157,16 @@ namespace FastGithub.Http
         private async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, IPEndPoint ipEndPoint, CancellationToken cancellationToken)
         {
             var socket = new Socket(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-            await socket.ConnectAsync(ipEndPoint, cancellationToken);
+            try
+            {
+                await socket.ConnectAsync(ipEndPoint, cancellationToken);
+            }
+            catch (Exception)
+            {
+                socket.Dispose();
+                throw;
+            }
+
             var stream = new NetworkStream(socket, ownsSocket: true);
 
             var requestContext = context.InitialRequestMessage.GetRequestContext();
@@ -139,11 +177,20 @@ namespace FastGithub.Http
 
             var tlsSniValue = requestContext.TlsSniValue.WithIPAddress(ipEndPoint.Address);
             var sslStream = new SslStream(stream, leaveInnerStreamOpen: false);
-            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            try
             {
-                TargetHost = tlsSniValue.Value,
-                RemoteCertificateValidationCallback = ValidateServerCertificate
-            }, cancellationToken);
+                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = tlsSniValue.Value,
+                    RemoteCertificateValidationCallback = ValidateServerCertificate
+                }, cancellationToken);
+            }
+            catch (Exception)
+            {
+                // SslStream释放时会一并释放内部的NetworkStream与Socket
+                sslStream.Dispose();
+                throw;
+            }
 
             return sslStream;
 

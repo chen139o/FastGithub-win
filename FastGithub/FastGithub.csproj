@@ -9,8 +9,8 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="7.0.0-rc*" />
-		<PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="7.0.0-rc*" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="8.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
 		<PackageReference Include="Serilog.Sinks.Network" Version="2.0.2.68" />
 		<ProjectReference Include="..\FastGithub.DomainResolve\FastGithub.DomainResolve.csproj" />
 		<ProjectReference Include="..\FastGithub.HttpServer\FastGithub.HttpServer.csproj" />
@@ -25,13 +25,16 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Include="../README.md" Link="README.md">
+		<!-- 这三个文件是随程序发布给用户看的说明，用 Exists 条件包起来：
+		     None Include 在文件缺失时会直接报 MSB3030 编译失败，
+		     加条件后源码在"不带文档"的场景（例如只上传代码）下也能编译 -->
+		<None Include="../README.md" Link="README.md" Condition="Exists('../README.md')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
-		<None Include="../README.html" Link="README.html">
+		<None Include="../README.html" Link="README.html" Condition="Exists('../README.html')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
-		<None Include="../LICENSE" Link="LICENSE">
+		<None Include="../LICENSE" Link="LICENSE" Condition="Exists('../LICENSE')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>

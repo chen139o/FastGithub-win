@@ -49,9 +49,21 @@ namespace FastGithub.Http
         private async void StartCleanup()
         {
             await Task.Yield();
-            while (this.Cleanup() == false)
+            while (true)
             {
-                await Task.Delay(this.CleanupInterval);
+                try
+                {
+                    if (this.Cleanup() == true)
+                    {
+                        return;
+                    }
+                    await Task.Delay(this.CleanupInterval);
+                }
+                catch (Exception)
+                {
+                    // async void方法内未处理的异常会直接终止整个进程，
+                    // 因此这里吞掉单次清理的异常，等待下一个周期重试
+                }
             }
         }
 

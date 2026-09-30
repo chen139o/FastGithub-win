@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# 程序运行时生成的自签 CA 证书与私钥
+# fastgithub.key 是 CA 私钥，一旦提交，持有者可以伪造任意网站的 HTTPS 证书
+cacert/

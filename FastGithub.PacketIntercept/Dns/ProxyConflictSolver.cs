@@ -29,6 +29,12 @@ namespace FastGithub.PacketIntercept.Dns
         private readonly IOptions<FastGithubOptions> options;
         private readonly ILogger<ProxyConflictSolver> logger;
 
+        /// <summary>
+        /// 记录本次运行由FastGithub新增的ProxyOverride项
+        /// 恢复时只移除这些项，不触碰用户自己写的同名项
+        /// </summary>
+        private readonly HashSet<string> addedItems = new(StringComparer.OrdinalIgnoreCase);
+
         [DllImport("wininet.dll")]
         private static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
 
@@ -53,7 +59,15 @@ namespace FastGithub.PacketIntercept.Dns
         /// <returns></returns>
         public Task SolveAsync(CancellationToken cancellationToken)
         {
-            this.SetToProxyOvride();
+            try
+            {
+                this.SetToProxyOvride();
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "设置ProxyOverride失败");
+            }
+
             this.CheckProxyConflict();
             return Task.CompletedTask;
         }
@@ -65,42 +79,73 @@ namespace FastGithub.PacketIntercept.Dns
         /// <returns></returns>
         public Task RestoreAsync(CancellationToken cancellationToken)
         {
-            this.RemoveFromProxyOvride();
+            try
+            {
+                this.RemoveFromProxyOvride();
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "恢复ProxyOverride失败");
+            }
             return Task.CompletedTask;
         }
 
         /// <summary>
         /// 添加到ProxyOvride
+        /// 保持用户原有项的书写顺序与大小写，只追加缺失的项
         /// </summary>
         private void SetToProxyOvride()
         {
             using var settings = Registry.CurrentUser.OpenSubKey(INTERNET_SETTINGS, writable: true);
             if (settings == null)
             {
+                this.logger.LogWarning("无法打开Internet Settings注册表项，ProxyOverride未设置");
                 return;
             }
 
-            var items = this.options.Value.DomainConfigs.Keys.ToHashSet();
-            foreach (var item in GetProxyOvride(settings))
+            var existing = GetProxyOvride(settings);
+            var items = new List<string>(existing);
+            var itemSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+
+            this.addedItems.Clear();
+            foreach (var domain in this.options.Value.DomainConfigs.Keys)
             {
-                items.Add(item);
+                if (itemSet.Add(domain) == true)
+                {
+                    items.Add(domain);
+                    this.addedItems.Add(domain);
+                }
             }
-            SetProxyOvride(settings, items);
+
+            if (this.addedItems.Count > 0)
+            {
+                SetProxyOvride(settings, items);
+            }
         }
 
         /// <summary>
         /// 从ProxyOvride移除
+        /// 只移除本次运行由本程序新增的项，用户原有的项一律保留
         /// </summary>
         private void RemoveFromProxyOvride()
         {
-            using var settings = Registry.CurrentUser.OpenSubKey(INTERNET_SETTINGS, writable: true);
-            if (settings == null)
+            if (this.addedItems.Count == 0)
             {
                 return;
             }
 
-            var proxyOvride = GetProxyOvride(settings);
-            var items = proxyOvride.Except(this.options.Value.DomainConfigs.Keys);
+            using var settings = Registry.CurrentUser.OpenSubKey(INTERNET_SETTINGS, writable: true);
+            if (settings == null)
+            {
+                this.logger.LogWarning("无法打开Internet Settings注册表项，ProxyOverride未恢复");
+                return;
+            }
+
+            var items = GetProxyOvride(settings)
+                .Where(item => this.addedItems.Contains(item) == false)
+                .ToList();
+
+            this.addedItems.Clear();
             SetProxyOvride(settings, items);
         }
 
@@ -153,7 +198,16 @@ namespace FastGithub.PacketIntercept.Dns
         private static void SetProxyOvride(RegistryKey registryKey, IEnumerable<string> items)
         {
             var value = string.Join(PROXYOVERRIDE_SEPARATOR, items);
-            registryKey.SetValue(PROXYOVERRIDE_KEY, value, RegistryValueKind.String);
+            if (string.IsNullOrEmpty(value) == true)
+            {
+                // 没有内容时删除该值，避免在注册表里留下一个空字符串
+                registryKey.DeleteValue(PROXYOVERRIDE_KEY, throwOnMissingValue: false);
+            }
+            else
+            {
+                registryKey.SetValue(PROXYOVERRIDE_KEY, value, RegistryValueKind.String);
+            }
+
             InternetSetOption(IntPtr.Zero, INTERNET_OPTION_PROXY_SETTINGS_CHANGED, IntPtr.Zero, 0);
             InternetSetOption(IntPtr.Zero, INTERNET_OPTION_REFRESH, IntPtr.Zero, 0);
         }

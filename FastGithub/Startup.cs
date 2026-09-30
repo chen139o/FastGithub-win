@@ -90,7 +90,14 @@ namespace FastGithub
         /// 配置服务
         /// </summary>
         /// <param name="builder"></param>
+        // 注意：只声明 Dictionary<string, DomainConfig> 不足以保住 DomainConfig 自身的成员。
+        // 经 trim + 单文件发布实测：未被任何静态引用触达过 setter 的属性会被裁剪，
+        // 导致 appsettings 里的域名级配置静默保持默认值 ——
+        // TlsIgnoreNameMismatch / TlsSniPattern / Timeout / Destination / Response / IPAddress 全部失效，
+        // 只有 TlsSni 因被 HttpReverseProxyMiddleware.defaultDomainConfig 引用而幸存。
+        // 必须显式对 DomainConfig 本身再声明一次。
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(Dictionary<string, DomainConfig>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DomainConfig))]
         public static void ConfigureServices(this WebApplicationBuilder builder)
         {
             var services = builder.Services;

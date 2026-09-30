@@ -76,6 +76,24 @@ namespace FastGithub.DomainResolve
         }
 
         /// <summary>
+        /// 报告节点连接失败
+        /// </summary>
+        /// <param name="endPoint"></param>
+        public void ReportConnectFailed(IPEndPoint endPoint)
+        {
+            this.addressService.ReportConnectFailed(endPoint);
+        }
+
+        /// <summary>
+        /// 报告节点连接成功
+        /// </summary>
+        /// <param name="endPoint"></param>
+        public void ReportConnectSucceeded(IPEndPoint endPoint)
+        {
+            this.addressService.ReportConnectSucceeded(endPoint);
+        }
+
+        /// <summary>
         /// 对所有节点进行测速
         /// </summary>
         /// <param name="cancellationToken"></param>

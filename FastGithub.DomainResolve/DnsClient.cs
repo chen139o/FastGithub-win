@@ -34,6 +34,11 @@ namespace FastGithub.DomainResolve
         private readonly IMemoryCache dnsStateCache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
         private readonly IMemoryCache dnsLookupCache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
+        /// <summary>
+        /// 是否已经记录过"没有任何可用dns"的错误，避免刷屏
+        /// </summary>
+        private int noDnsServerLogged = 0;
+
         private readonly TimeSpan stateExpiration = TimeSpan.FromMinutes(5d);
         private readonly TimeSpan minTimeToLive = TimeSpan.FromSeconds(30d);
         private readonly TimeSpan maxTimeToLive = TimeSpan.FromMinutes(10d);
@@ -88,9 +93,11 @@ namespace FastGithub.DomainResolve
         /// <returns></returns>
         private async IAsyncEnumerable<IPEndPoint> GetDnsServersAsync([EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            var hasDnsServer = false;
             var cryptDns = this.dnscryptProxy.LocalEndPoint;
             if (cryptDns != null)
             {
+                hasDnsServer = true;
                 yield return cryptDns;
                 yield return cryptDns;
             }
@@ -99,8 +106,14 @@ namespace FastGithub.DomainResolve
             {
                 if (await this.IsDnsAvailableAsync(dns, cancellationToken))
                 {
+                    hasDnsServer = true;
                     yield return dns;
                 }
+            }
+
+            if (hasDnsServer == false && Interlocked.Exchange(ref this.noDnsServerLogged, 1) == 0)
+            {
+                this.logger.LogError($"{nameof(DnscryptProxy)}未提供解析服务且FallbackDns不可用，当前没有任何可用的dns，域名解析将全部失败");
             }
         }
 
