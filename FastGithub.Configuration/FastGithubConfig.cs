@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Options;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
@@ -92,6 +93,20 @@ namespace FastGithub.Configuration
 
             DomainConfig? GetDomainConfig(string domain)
             {
+                // 先用字符串做一次精确命中。
+                // DomainPattern的排序是"先比段数、再逐段比较、通配在后"，
+                // 因此段数更多的精确规则会排在通配规则之后，
+                // 例如 uploads.github.com(3段) 永远排在 *.github.com(2段) 后面，
+                // 导致精确配置被通配规则遮蔽而从未生效。
+                // 这里不改排序语义，只在查找顺序上让"完全相等"的规则优先。
+                foreach (var item in this.domainConfigs)
+                {
+                    if (string.Equals(item.Key.ToString(), domain, StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        return item.Value;
+                    }
+                }
+
                 var key = this.domainConfigs.Keys.FirstOrDefault(item => item.IsMatch(domain));
                 return key == null ? null : this.domainConfigs[key];
             }
