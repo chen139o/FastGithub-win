@@ -49,7 +49,11 @@ namespace FastGithub
         /// <param name="builder"></param>
         public static void ConfigureWebHost(this WebApplicationBuilder builder)
         {
-            builder.WebHost.UseShutdownTimeout(TimeSpan.FromSeconds(1d));
+            // 原来的1秒对关闭阶段过于紧张：Host 是按注册顺序逆序停的，
+            // 排在前面的 PacketIntercept 要回滚 hosts 与注册表(写阶段还不接受取消)，
+            // 一旦超时，后面的 DomainResolve 等 HostedService 会被直接放弃执行，
+            // 导致 dnscrypt-proxy 子进程得不到清理
+            builder.WebHost.UseShutdownTimeout(TimeSpan.FromSeconds(10d));
             builder.WebHost.UseKestrel(kestrel =>
             {
                 kestrel.NoLimit();
@@ -138,6 +142,8 @@ namespace FastGithub
                 var json = JsonSerializer.Serialize(flowStatistics, FlowStatisticsContext.Default.FlowStatistics);
                 return context.Response.WriteAsync(json);
             });
+
+            app.MapConnectMonitor();
         }
     }
 }

@@ -1,5 +1,6 @@
 ﻿using FastGithub.Configuration;
 using FastGithub.DomainResolve;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -22,23 +23,23 @@ namespace FastGithub.Http
     {
         private readonly DomainConfig domainConfig;
         private readonly IDomainResolver domainResolver;
+        private readonly ConnectMonitor monitor;
+        private readonly ILogger<HttpClientHandler> logger;
         private readonly TimeSpan connectTimeout = TimeSpan.FromSeconds(10d);
-
-        /// <summary>
-        /// 连接阶段的兜底总时限
-        /// 单个ip的尝试有connectTimeout，但没有上限的逐个重试会让请求长时间挂起
-        /// </summary>
-        private readonly TimeSpan connectTimeoutTotal = TimeSpan.FromSeconds(30d);
 
         /// <summary>
         /// HttpClientHandler
         /// </summary>
         /// <param name="domainConfig"></param>
         /// <param name="domainResolver"></param> 
-        public HttpClientHandler(DomainConfig domainConfig, IDomainResolver domainResolver)
+        /// <param name="monitor"></param>
+        /// <param name="logger"></param>
+        public HttpClientHandler(DomainConfig domainConfig, IDomainResolver domainResolver, ConnectMonitor monitor, ILogger<HttpClientHandler> logger)
         {
             this.domainConfig = domainConfig;
             this.domainResolver = domainResolver;
+            this.monitor = monitor;
+            this.logger = logger;
             this.InnerHandler = this.CreateSocketsHttpHandler();
         }
 
@@ -93,40 +94,66 @@ namespace FastGithub.Http
 
         /// <summary>
         /// 连接回调
+        /// 
+        /// 所有候选ip共享一个总时限：单个ip的尝试有connectTimeout，
+        /// 但候选ip的数量没有上限，逐个串行重试会让请求长时间挂起。
+        /// 该总时限可通过监控页面调整并立即生效。
         /// </summary>
         /// <param name="context"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
         private async ValueTask<Stream> ConnectCallback(SocketsHttpConnectionContext context, CancellationToken cancellationToken)
         {
-            // 所有候选ip共享一个总时限：
-            // 单个ip的尝试有connectTimeout，但候选ip的数量没有上限，
-            // 逐个串行重试会让请求卡住十几秒甚至更久
-            using var totalTokenSource = new CancellationTokenSource(this.connectTimeoutTotal);
+            var timeoutTotal = this.monitor.ConnectTimeoutTotal;
+            using var totalTokenSource = new CancellationTokenSource(timeoutTotal);
             using var totalLinkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, totalTokenSource.Token);
 
+            // 只有监控页面在轮询时才记录状态，普通用户不承担这部分开销
+            var tracking = this.monitor.IsTracking;
+
+            // 登记取消源(轻操作)，使监控页面随时可以中止本次连接
+            this.monitor.RegisterCancelSource(totalTokenSource);
+            if (tracking == true)
+            {
+                this.monitor.OnConnectStart(context.DnsEndPoint.Host, timeoutTotal);
+            }
+
+            var attempted = 0;
             var innerExceptions = new List<Exception>();
             var ipEndPoints = this.GetIPEndPointsAsync(context.DnsEndPoint, totalLinkedSource.Token);
             try
             {
                 await foreach (var ipEndPoint in ipEndPoints)
                 {
+                    attempted++;
+                    if (tracking == true)
+                    {
+                        this.monitor.OnTryAddress(ipEndPoint.Address.ToString());
+                    }
+
                     try
                     {
                         using var timeoutTokenSource = new CancellationTokenSource(this.connectTimeout);
                         using var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(totalLinkedSource.Token, timeoutTokenSource.Token);
                         var stream = await this.ConnectAsync(context, ipEndPoint, linkedTokenSource.Token);
                         this.domainResolver.ReportConnectSucceeded(ipEndPoint);
+                        this.monitor.OnConnectEnd(true);
                         return stream;
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested == false)
                     {
                         innerExceptions.Add(new HttpConnectTimeoutException(ipEndPoint.Address));
+                        if (tracking == true)
+                        {
+                            this.monitor.OnError($"{ipEndPoint.Address} 连接超时");
+                        }
 
                         // 只有该ip自己的connectTimeout到期才降权；
-                        // 若是30秒总预算耗尽，这个ip可能只是排在后面没轮到，不应惩罚
+                        // 若是总预算耗尽(或被人为中止)，这个ip可能只是排在后面没轮到，不应惩罚
                         if (totalTokenSource.IsCancellationRequested == true)
                         {
+                            this.logger.LogWarning(
+                                $"{context.DnsEndPoint.Host}:{context.DnsEndPoint.Port} 连接总时限{timeoutTotal.TotalSeconds:0}秒耗尽，已尝试{attempted}个IP后放弃");
                             break;
                         }
                         this.domainResolver.ReportConnectFailed(ipEndPoint);
@@ -134,17 +161,33 @@ namespace FastGithub.Http
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         innerExceptions.Add(ex);
+                        if (tracking == true)
+                        {
+                            this.monitor.OnError($"{ipEndPoint.Address} {ex.Message}");
+                        }
                         this.domainResolver.ReportConnectFailed(ipEndPoint);
                     }
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested == false)
             {
-                // 总时限已耗尽
+                // 总时限已耗尽（发生在等待下一个候选IP时）
+                this.logger.LogWarning(
+                    $"{context.DnsEndPoint.Host}:{context.DnsEndPoint.Port} 连接总时限{timeoutTotal.TotalSeconds:0}秒耗尽，已尝试{attempted}个IP后放弃");
             }
 
+            this.monitor.OnConnectEnd(false);
             cancellationToken.ThrowIfCancellationRequested();
-            throw new AggregateException($"连接{context.DnsEndPoint.Host}失败：{this.connectTimeoutTotal.TotalSeconds:0}秒内没有找到可成功连接的IP", innerExceptions);
+
+            // 记录失败明细，用于区分"候选ip没试完"和"所有候选ip都失败"
+            if (innerExceptions.Count > 0)
+            {
+                var summary = string.Join(" | ", innerExceptions.Take(6).Select(item => item.Message));
+                this.logger.LogWarning(
+                    $"{context.DnsEndPoint.Host}:{context.DnsEndPoint.Port} 连接失败，共尝试{attempted}个IP，异常明细：{summary}");
+            }
+
+            throw new AggregateException($"连接{context.DnsEndPoint.Host}失败：{timeoutTotal.TotalSeconds:0}秒内没有找到可成功连接的IP", innerExceptions);
         }
 
         /// <summary>
@@ -197,6 +240,15 @@ namespace FastGithub.Http
             // 验证证书有效性
             bool ValidateServerCertificate(object sender, X509Certificate? cert, X509Chain? chain, SslPolicyErrors errors)
             {
+                if (errors != SslPolicyErrors.None)
+                {
+                    // 记录校验失败的细节：errors的具体值决定了处理方式，
+                    // NameMismatch可以靠TlsIgnoreNameMismatch兜底，其它错误则一票否决
+                    var dnsNames = string.Join(",", ReadDnsNames(cert));
+                    this.logger.LogWarning(
+                        $"{context.DnsEndPoint.Host}({ipEndPoint.Address}) 证书校验失败：errors={errors}，Subject={cert?.Subject}，SAN=[{dnsNames}]");
+                }
+
                 if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNameMismatch))
                 {
                     if (this.domainConfig.TlsIgnoreNameMismatch == true)

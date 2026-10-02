@@ -1,5 +1,6 @@
 ﻿using FastGithub.Configuration;
 using FastGithub.DomainResolve;
+using Microsoft.Extensions.Logging;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading;
@@ -22,8 +23,10 @@ namespace FastGithub.Http
         /// </summary>
         /// <param name="domainConfig"></param>
         /// <param name="domainResolver"></param>
-        public HttpClient(DomainConfig domainConfig, IDomainResolver domainResolver)
-            : this(new HttpClientHandler(domainConfig, domainResolver), disposeHandler: true)
+        /// <param name="monitor"></param>
+        /// <param name="loggerFactory"></param>
+        public HttpClient(DomainConfig domainConfig, IDomainResolver domainResolver, ConnectMonitor monitor, ILoggerFactory loggerFactory)
+            : this(new HttpClientHandler(domainConfig, domainResolver, monitor, loggerFactory.CreateLogger<HttpClientHandler>()), disposeHandler: true)
         {
         }
 

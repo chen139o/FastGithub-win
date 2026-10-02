@@ -28,6 +28,12 @@ namespace FastGithub.DomainResolve
         private Process? process;
 
         /// <summary>
+        /// 承载dnscrypt-proxy的Job
+        /// 保证父进程被强杀时，子进程也会被内核连带结束
+        /// </summary>
+        private ProcessJob? processJob;
+
+        /// <summary>
         /// 获取监听的节点
         /// </summary>
         public IPEndPoint? LocalEndPoint { get; private set; }
@@ -80,6 +86,11 @@ namespace FastGithub.DomainResolve
             await TomlUtil.SetLBStrategyAsync(this.tomlFilePath, "ph", cancellationToken);
             await TomlUtil.SetMinMaxTTLAsync(this.tomlFilePath, TimeSpan.FromMinutes(1d), TimeSpan.FromMinutes(2d), cancellationToken);
 
+            // 启动之前先清掉上一次可能残留的进程：
+            // Stop()只负责结束自己启动的那个，若上次是被强杀退出的，
+            // 它的子进程会一直残留，下一次启动必须在这里兜住
+            this.KillExistingProcesses();
+
             if (OperatingSystem.IsWindows() && Environment.UserInteractive == false)
             {
                 ServiceInstallUtil.StopAndDeleteService(this.serviceName);
@@ -89,6 +100,14 @@ namespace FastGithub.DomainResolve
             else
             {
                 this.process = StartDnscryptProxy();
+
+                // 加入Job：父进程无论以何种方式退出(优雅关闭/强杀/崩溃)，
+                // 内核都会结束Job内的进程
+                this.processJob ??= ProcessJob.TryCreate();
+                if (this.process != null && this.processJob != null)
+                {
+                    this.processJob.TryAssign(this.process);
+                }
             }
 
             if (this.process != null)
@@ -115,10 +134,13 @@ namespace FastGithub.DomainResolve
                     ServiceInstallUtil.StopAndDeleteService(this.serviceName);
                 }
 
-                if (this.process != null && this.process.HasExited == false)
-                {
-                    this.process.Kill();
-                }
+                // 按进程名清理，同时覆盖"本次启动的"和"历史残留的"
+                this.KillExistingProcesses();
+                this.process = null;
+
+                // 关闭Job句柄同样会结束Job内的进程，作为最后一道保险
+                this.processJob?.Dispose();
+                this.processJob = null;
             }
             catch (Exception ex)
             {
@@ -127,6 +149,29 @@ namespace FastGithub.DomainResolve
             finally
             {
                 this.LocalEndPoint = null;
+            }
+        }
+
+        /// <summary>
+        /// 结束所有同名进程
+        /// </summary>
+        private void KillExistingProcesses()
+        {
+            foreach (var item in Process.GetProcessesByName(this.processName))
+            {
+                try
+                {
+                    item.Kill();
+                    item.WaitForExit(3000);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogWarning($"清理已存在的{this.processName}(pid={item.Id})失败：{ex.Message}");
+                }
+                finally
+                {
+                    item.Dispose();
+                }
             }
         }
 

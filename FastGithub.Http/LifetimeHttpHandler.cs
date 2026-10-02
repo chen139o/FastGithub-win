@@ -1,4 +1,5 @@
 ﻿using FastGithub.DomainResolve;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Net.Http;
 using System.Threading;
@@ -18,13 +19,15 @@ namespace FastGithub.Http
         /// 具有生命周期的HttpHandler
         /// </summary>
         /// <param name="domainResolver"></param>
+        /// <param name="monitor"></param>
+        /// <param name="loggerFactory"></param>
         /// <param name="lifeTimeKey"></param>
         /// <param name="lifeTime"></param>
         /// <param name="deactivateAction"></param>
-        public LifetimeHttpHandler(IDomainResolver domainResolver, LifeTimeKey lifeTimeKey, TimeSpan lifeTime, Action<LifetimeHttpHandler> deactivateAction)
+        public LifetimeHttpHandler(IDomainResolver domainResolver, ConnectMonitor monitor, ILoggerFactory loggerFactory, LifeTimeKey lifeTimeKey, TimeSpan lifeTime, Action<LifetimeHttpHandler> deactivateAction)
         {
             this.LifeTimeKey = lifeTimeKey;
-            this.InnerHandler = new HttpClientHandler(lifeTimeKey.DomainConfig, domainResolver);
+            this.InnerHandler = new HttpClientHandler(lifeTimeKey.DomainConfig, domainResolver, monitor, loggerFactory.CreateLogger<HttpClientHandler>());
             this.timer = new Timer(this.OnTimerCallback, deactivateAction, lifeTime, Timeout.InfiniteTimeSpan);
         }
 
